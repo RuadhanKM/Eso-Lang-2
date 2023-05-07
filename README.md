@@ -9,6 +9,9 @@ Here is a table of the planned operators. Some of them are weird because I neede
 |---|---|
 |`Assignment`|`=`|
 |`Dot`|`.`|
+|`Semicolon`|`;`|
+|`Return`|`^`|
+|`Comment`|`\`|
 |`Equality`|`~`|
 |`And`|`&`|
 |`Or`|`\|`|
@@ -19,6 +22,7 @@ Here is a table of the planned operators. Some of them are weird because I neede
 |`Subtract`|`-`|
 |`Multiply`|`*`|
 |`Divide`|`/`|
+
 
 This list is _exhaustive_, so if you try `+=` or `%` you'll get an error.
 
@@ -40,13 +44,19 @@ This is how I want the syntax to look, but as I continue writing I'll probably c
 foo = "bar";
 baz = 12345;
 ```
-- Create a function with no parameters
+- Block with no parentheses is run and evaluated, this would print 
 ```
 foo = {
     print("Hi");
+    ^ "bar";
 };
+print(foo);
+
+\ -- OUTPUT --
+\ Hi
+\ bar 
 ```
-- Function with parameters
+- Use parentheses to create a function with parameters
 ```
 foo = (bar baz){
     print(bar + baz);

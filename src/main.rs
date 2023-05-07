@@ -1,16 +1,39 @@
-use std::io::prelude::*;
+use std::{io::prelude::*, collections::HashMap};
 use clap::Parser;
+use libloading::Library;
 
 lazy_static::lazy_static! {
     static ref USER_VAR_START: regex::Regex = regex::Regex::new(r"[A-Za-z_]").unwrap();
     static ref USER_VAR_END: regex::Regex = regex::Regex::new(r"[^A-Za-z1-9_]").unwrap();
     static ref NUMBER_START: regex::Regex = regex::Regex::new(r"[1-9]").unwrap();
     static ref NUMBER_END: regex::Regex = regex::Regex::new(r"[^1-9]").unwrap();
+
+    static ref VARS: HashMap<String, Var> = HashMap::new();
+    static ref LIBRARIES: HashMap<String, Library> = HashMap::new();
 }
+
 
 #[derive(Parser)]
 struct Cli {
     path: std::path::PathBuf,
+}
+
+struct Token {
+    token_type: TokenType,
+    token_value: Option<String>,
+    token_nested: Option<Vec<Token>>
+}
+
+struct Var {
+    datatype: Datatype,
+    value: Token
+}
+
+enum Datatype {
+    Func,
+    Class,
+    String,
+    Number
 }
 
 enum TokenType {
@@ -20,12 +43,6 @@ enum TokenType {
     Block,
     Number,
     Operator
-}
-
-struct Token {
-    token_type: TokenType,
-    token_value: Option<String>,
-    token_nested: Option<Vec<Token>>
 }
 
 enum Operator {
@@ -40,7 +57,11 @@ enum Operator {
     Greater,
     Equal,
     Not,
-    Dot
+    Dot,
+    Semicolon,
+    Return,
+    Import,
+    Comment
 }
 
 impl Operator {
@@ -58,6 +79,10 @@ impl Operator {
             '~' => Some(Operator::Equal),
             '!' => Some(Operator::Not),
             '.' => Some(Operator::Dot),
+            ';' => Some(Operator::Semicolon),
+            '^' => Some(Operator::Return),
+            '#' => Some(Operator::Import),
+            '\\' => Some(Operator::Comment),
             _ => None
         }
     }
@@ -74,19 +99,16 @@ impl Operator {
             Operator::Greater => '>',
             Operator::Equal => '~',
             Operator::Not => '!',
-            Operator::Dot => '.'
+            Operator::Dot => '.',
+            Operator::Semicolon => ';',
+            Operator::Return => '^',
+            Operator::Import => '#',
+            Operator::Comment => '\\'
         }
     }
 }
 
-struct Var {
-
-}
-
 impl Token {
-    fn new_blank(token_type: TokenType) -> Token {
-        Token { token_type, token_value: None, token_nested: None }
-    }
     fn new_value(token_type: TokenType, token_value: String) -> Token {
         Token { token_type, token_value: Some(token_value), token_nested: None }
     }
@@ -216,6 +238,76 @@ fn print_tokens(token_stack: &Vec<Token>, depth: usize) {
     }
 }
 
+fn evaluate_tokens(token_stack: &Vec<Token>) -> Option<Token> {
+    for (i, v) in token_stack.iter().enumerate() {
+        match v.token_type {
+            TokenType::Operator => {
+                match v.token_value.as_ref().unwrap().as_str() {
+                    "#" => {
+                        if token_stack.get(i+1).is_some() {
+                            let s: String = token_stack[i+1].token_value.clone().unwrap();
+                            unsafe {
+                                let l = libloading::Library::new(s.clone()).unwrap();
+                                LIBRARIES.insert(
+                                    s.clone(), 
+                                    l
+                                );
+                            }
+                        }
+                    }
+                    _ => ()
+                }
+            }
+            TokenType::Block => {
+                if token_stack.get(i-1).is_some() {
+                    match token_stack[i-1].token_type {
+                        TokenType::Operator => {
+                            match token_stack[i-1].token_value.as_ref().unwrap().as_str() {
+                                "=" => {
+
+                                } 
+                                _ => ()
+                            }
+                        },
+                        TokenType::Parenthetical => {
+
+                        }
+                        _ => ()
+                    }
+                } else {
+                    evaluate_tokens(v.token_nested.as_ref().unwrap());
+                }
+            },
+            TokenType::UserVar => {
+                match token_stack[i+1].token_type {
+                    TokenType::Parenthetical => {
+                        let mut found = false;
+                        for name in VARS.keys() {
+                            if *name == *v.token_value.as_ref().unwrap() {
+                                evaluate_tokens(VARS.get(name).unwrap().value.token_nested.as_ref().unwrap());
+                                found = true;
+                            }
+                        }
+                        if !found {
+                            for (name, library) in LIBRARIES.iter() {
+                                if *name == *v.token_value.as_ref().unwrap() {
+                                    unsafe {
+                                        library.get::<unsafe extern fn(&Token) -> Token>(name.as_bytes()).unwrap()(v);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => ()
+                }
+            }
+            _ => ()
+        }
+    }
+
+    None
+}
+
 fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_BACKTRACE", "1");
     let args = Cli::parse();
@@ -225,10 +317,11 @@ fn main() -> std::io::Result<()> {
     file.read_to_string(&mut file_content)?;
     let chars = file_content.chars().collect::<Vec<char>>();
     
-    let vars: Vec<i32> = Vec::new();
     let token_stack: Vec<Token> = tokenize(&chars);
 
     print_tokens(&token_stack, 0);
+
+    evaluate_tokens(&token_stack);
 
     Ok(())
 }
