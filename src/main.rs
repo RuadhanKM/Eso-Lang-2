@@ -1,6 +1,9 @@
-use std::{io::prelude::*, collections::HashMap};
-use clap::Parser;
+use std::{io::prelude::*, sync::Mutex, collections::HashMap};
 use libloading::Library;
+use clap::Parser;
+
+pub mod esotypes;
+use esotypes::*;
 
 lazy_static::lazy_static! {
     static ref USER_VAR_START: regex::Regex = regex::Regex::new(r"[A-Za-z_]").unwrap();
@@ -8,123 +11,13 @@ lazy_static::lazy_static! {
     static ref NUMBER_START: regex::Regex = regex::Regex::new(r"[1-9]").unwrap();
     static ref NUMBER_END: regex::Regex = regex::Regex::new(r"[^1-9]").unwrap();
 
-    static ref VARS: HashMap<String, Var> = HashMap::new();
-    static ref LIBRARIES: HashMap<String, Library> = HashMap::new();
+    static ref VARS: Mutex<HashMap<String, Var>> = Mutex::new(HashMap::new());
+    static ref LIBRARIES: Mutex<HashMap<String, Library>> = Mutex::new(HashMap::new());
 }
-
 
 #[derive(Parser)]
 struct Cli {
     path: std::path::PathBuf,
-}
-
-struct Token {
-    token_type: TokenType,
-    token_value: Option<String>,
-    token_nested: Option<Vec<Token>>
-}
-
-struct Var {
-    datatype: Datatype,
-    value: Token
-}
-
-enum Datatype {
-    Func,
-    Class,
-    String,
-    Number
-}
-
-enum TokenType {
-    UserVar,
-    String,
-    Parenthetical,
-    Block,
-    Number,
-    Operator
-}
-
-enum Operator {
-    Def,
-    And,
-    Or,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Less,
-    Greater,
-    Equal,
-    Not,
-    Dot,
-    Semicolon,
-    Return,
-    Import,
-    Comment
-}
-
-impl Operator {
-    fn get_value(c: &char) -> Option<Operator> {
-        match c {
-            '=' => Some(Operator::Def),
-            '&' => Some(Operator::And),
-            '|' => Some(Operator::Or),
-            '+' => Some(Operator::Add),
-            '-' => Some(Operator::Sub),
-            '*' => Some(Operator::Mul),
-            '/' => Some(Operator::Div),
-            '<' => Some(Operator::Less),
-            '>' => Some(Operator::Greater),
-            '~' => Some(Operator::Equal),
-            '!' => Some(Operator::Not),
-            '.' => Some(Operator::Dot),
-            ';' => Some(Operator::Semicolon),
-            '^' => Some(Operator::Return),
-            '#' => Some(Operator::Import),
-            '\\' => Some(Operator::Comment),
-            _ => None
-        }
-    }
-    fn get_char(&self) -> char {
-        match self {
-            Operator::Def => '=',
-            Operator::And => '&',
-            Operator::Or => '|',
-            Operator::Add => '+',
-            Operator::Sub => '-',
-            Operator::Mul => '*',
-            Operator::Div => '/',
-            Operator::Less => '<',
-            Operator::Greater => '>',
-            Operator::Equal => '~',
-            Operator::Not => '!',
-            Operator::Dot => '.',
-            Operator::Semicolon => ';',
-            Operator::Return => '^',
-            Operator::Import => '#',
-            Operator::Comment => '\\'
-        }
-    }
-}
-
-impl Token {
-    fn new_value(token_type: TokenType, token_value: String) -> Token {
-        Token { token_type, token_value: Some(token_value), token_nested: None }
-    }
-    fn new_nested(token_type: TokenType, nested_value: Vec<Token>) -> Token {
-        Token { token_type, token_value: None, token_nested: Some(nested_value) }
-    }
-    fn to_string(&self) -> &str {
-        match self.token_type {
-            TokenType::Block => "Block",
-            TokenType::Number => "Number",
-            TokenType::UserVar => "Var",
-            TokenType::Parenthetical => "Parenthetical",
-            TokenType::String => "String",
-            TokenType::Operator => "Operator"
-        }
-    }
 }
 
 fn substr(s: &String, start: usize, len: usize) -> String {
@@ -239,7 +132,14 @@ fn print_tokens(token_stack: &Vec<Token>, depth: usize) {
 }
 
 fn evaluate_tokens(token_stack: &Vec<Token>) -> Option<Token> {
-    for (i, v) in token_stack.iter().enumerate() {
+    let mut i = 0;
+    let mut val = None;
+
+    while i < token_stack.len(){
+        let v = &token_stack[i];
+
+        println!("{}", v.to_string());
+
         match v.token_type {
             TokenType::Operator => {
                 match v.token_value.as_ref().unwrap().as_str() {
@@ -247,16 +147,17 @@ fn evaluate_tokens(token_stack: &Vec<Token>) -> Option<Token> {
                         if token_stack.get(i+1).is_some() {
                             let s: String = token_stack[i+1].token_value.clone().unwrap();
                             unsafe {
-                                let l = libloading::Library::new(s.clone()).unwrap();
-                                LIBRARIES.insert(
+                                LIBRARIES.lock().unwrap().insert(
                                     s.clone(), 
-                                    l
+                                    libloading::Library::new(s.clone()).unwrap()
                                 );
                             }
                         }
+                        i += 1;
                     }
                     _ => ()
                 }
+                i += 1;
             }
             TokenType::Block => {
                 if token_stack.get(i-1).is_some() {
@@ -281,31 +182,42 @@ fn evaluate_tokens(token_stack: &Vec<Token>) -> Option<Token> {
             TokenType::UserVar => {
                 match token_stack[i+1].token_type {
                     TokenType::Parenthetical => {
+                        // Search for user-defined function
                         let mut found = false;
-                        for name in VARS.keys() {
+                        for (name, var) in VARS.lock().unwrap().iter() {
                             if *name == *v.token_value.as_ref().unwrap() {
-                                evaluate_tokens(VARS.get(name).unwrap().value.token_nested.as_ref().unwrap());
+                                evaluate_tokens(var.value.token_nested.as_ref().unwrap());
                                 found = true;
                             }
                         }
+                        // Search for external library function
                         if !found {
-                            for (name, library) in LIBRARIES.iter() {
-                                if *name == *v.token_value.as_ref().unwrap() {
-                                    unsafe {
-                                        library.get::<unsafe extern fn(&Token) -> Token>(name.as_bytes()).unwrap()(v);
+                            for (_, library) in LIBRARIES.lock().unwrap().iter() {
+                                unsafe {
+                                    let f = library.get::<unsafe extern fn(&Vec<Token>) -> Option<Token>>(v.token_value.as_ref().unwrap().as_bytes());
+                                    let params = token_stack[i+1].token_nested.as_ref().unwrap().split(|x| {if matches!(x.token_type, TokenType::Operator) {return x.token_value.as_ref().unwrap() == ",";} false});
+                                    
+                                    for a in params {
+                                        println!("FUNC PARAMS: {}", evaluate_tokens(&a.to_vec()).unwrap().to_string());
+                                    }
+
+                                    if f.is_ok() {
+                                        return f.unwrap()(token_stack[i+1].token_nested.as_ref().unwrap());
                                     }
                                 }
                             }
                         }
+                        i += 1;
                     }
                     _ => ()
                 }
+                i += 1;
             }
-            _ => ()
+            _ => i += 1
         }
     }
 
-    None
+    val
 }
 
 fn main() -> std::io::Result<()> {

@@ -1,3 +1,5 @@
 /target
 *.eso
-std.rs
+*.so
+*.dll
+*.dll.a
