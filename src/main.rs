@@ -8,6 +8,8 @@ use esotypes::*;
 lazy_static::lazy_static! {
     static ref USER_VAR_START: regex::Regex = regex::Regex::new(r"[A-Za-z_]").unwrap();
     static ref USER_VAR_END: regex::Regex = regex::Regex::new(r"[^A-Za-z1-9_]").unwrap();
+
+    // Want to change this for decimals, use this r"\d+\.?\d+"
     static ref NUMBER_START: regex::Regex = regex::Regex::new(r"[1-9]").unwrap();
     static ref NUMBER_END: regex::Regex = regex::Regex::new(r"[^1-9]").unwrap();
 
@@ -18,6 +20,8 @@ lazy_static::lazy_static! {
 #[derive(Parser)]
 struct Cli {
     path: std::path::PathBuf,
+    #[clap(long, short, action)]
+    debug: bool
 }
 
 fn substr(s: &String, start: usize, len: usize) -> String {
@@ -131,14 +135,13 @@ fn print_tokens(token_stack: &Vec<Token>, depth: usize) {
     }
 }
 
-fn evaluate_tokens(token_stack: &Vec<Token>) -> Option<Token> {
+fn evaluate_tokens(token_stack: &Vec<Token>, get_value: bool, debug: bool) -> Option<Var> {
     let mut i = 0;
-    let mut val = None;
 
     while i < token_stack.len(){
         let v = &token_stack[i];
 
-        println!("{}", v.to_string());
+        if debug { println!("{}", v.to_string()); }
 
         match v.token_type {
             TokenType::Operator => {
@@ -155,6 +158,9 @@ fn evaluate_tokens(token_stack: &Vec<Token>) -> Option<Token> {
                         }
                         i += 1;
                     }
+                    "+" => {
+                        
+                    }
                     _ => ()
                 }
                 i += 1;
@@ -162,48 +168,66 @@ fn evaluate_tokens(token_stack: &Vec<Token>) -> Option<Token> {
             TokenType::Block => {
                 if token_stack.get(i-1).is_some() {
                     match token_stack[i-1].token_type {
-                        TokenType::Operator => {
-                            match token_stack[i-1].token_value.as_ref().unwrap().as_str() {
-                                "=" => {
-
-                                } 
-                                _ => ()
-                            }
-                        },
                         TokenType::Parenthetical => {
-
+                            assert!(get_value);
+                            return Some(Var {
+                                datatype: Datatype::Func,
+                                value: v.clone()
+                            });
                         }
                         _ => ()
                     }
                 } else {
-                    evaluate_tokens(v.token_nested.as_ref().unwrap());
+                    return evaluate_tokens(v.token_nested.as_ref().unwrap(), get_value, debug);
                 }
             },
+            TokenType::String => {
+                if token_stack.len() == 1 {
+                    assert!(get_value);
+                    return Some(Var {
+                        datatype: Datatype::String,
+                        value: v.clone()
+                    })
+                }
+                i += 1;
+            }
+            TokenType::Number => {
+                if token_stack.len() == 1 {
+                    assert!(get_value);
+                    return Some(Var {
+                        datatype: Datatype::Number,
+                        value: v.clone()
+                    });
+                }
+                i += 1;
+            }
             TokenType::UserVar => {
                 match token_stack[i+1].token_type {
                     TokenType::Parenthetical => {
                         // Search for user-defined function
-                        let mut found = false;
                         for (name, var) in VARS.lock().unwrap().iter() {
                             if *name == *v.token_value.as_ref().unwrap() {
-                                evaluate_tokens(var.value.token_nested.as_ref().unwrap());
-                                found = true;
+                                return evaluate_tokens(var.value.token_nested.as_ref().unwrap(), get_value, debug);
                             }
                         }
                         // Search for external library function
-                        if !found {
-                            for (_, library) in LIBRARIES.lock().unwrap().iter() {
-                                unsafe {
-                                    let f = library.get::<unsafe extern fn(&Vec<Token>) -> Option<Token>>(v.token_value.as_ref().unwrap().as_bytes());
-                                    let params = token_stack[i+1].token_nested.as_ref().unwrap().split(|x| {if matches!(x.token_type, TokenType::Operator) {return x.token_value.as_ref().unwrap() == ",";} false});
-                                    
-                                    for a in params {
-                                        println!("FUNC PARAMS: {}", evaluate_tokens(&a.to_vec()).unwrap().to_string());
+                        for (_, library) in LIBRARIES.lock().unwrap().iter() {
+                            unsafe {
+                                let f = library.get::<unsafe extern fn(&Vec<Option<Var>>) -> Option<Var>>(v.token_value.as_ref().unwrap().as_bytes());
+                                let params = token_stack[i+1].token_nested.clone().as_ref().unwrap()
+                                            .split(|x| {if matches!(x.token_type, TokenType::Operator) {return x.token_value.as_ref().unwrap() == ",";} false})
+                                            .map(|x| evaluate_tokens(&x.to_vec(), true, debug))
+                                            .collect::<Vec<Option<Var>>>();
+                                
+                                if debug {
+                                    for a in &params {
+                                        println!("FUNC PARAMS: {}", a.as_ref().unwrap().value.to_string());
                                     }
+                                }
 
-                                    if f.is_ok() {
-                                        return f.unwrap()(token_stack[i+1].token_nested.as_ref().unwrap());
-                                    }
+                                if f.is_ok() {
+                                    let test = f.unwrap()(&params);
+                                    return test;
                                 }
                             }
                         }
@@ -217,12 +241,13 @@ fn evaluate_tokens(token_stack: &Vec<Token>) -> Option<Token> {
         }
     }
 
-    val
+    None
 }
 
 fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_BACKTRACE", "1");
     let args = Cli::parse();
+
+    std::env::set_var("RUST_BACKTRACE", if args.debug { "1" } else { "0" });
     
     let mut file = std::fs::File::open(args.path)?;
     let mut file_content = String::new();
@@ -231,9 +256,9 @@ fn main() -> std::io::Result<()> {
     
     let token_stack: Vec<Token> = tokenize(&chars);
 
-    print_tokens(&token_stack, 0);
+    if args.debug { print_tokens(&token_stack, 0); };
 
-    evaluate_tokens(&token_stack);
+    evaluate_tokens(&token_stack, false, args.debug);
 
     Ok(())
 }
